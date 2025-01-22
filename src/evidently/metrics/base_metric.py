@@ -1,38 +1,23 @@
-import abc
-from dataclasses import dataclass
-from typing import Generic
-from typing import Tuple
-from typing import TypeVar
+from typing import Dict
 from typing import Optional
+from typing import Type
+from typing import Union
 
-import pandas as pd
-
-from evidently.pipeline.column_mapping import ColumnMapping
-
-TResult = TypeVar("TResult")
-
-
-@dataclass
-class InputData:
-    reference_data: Optional[pd.DataFrame]
-    current_data: pd.DataFrame
-    column_mapping: ColumnMapping
+from evidently.base_metric import Metric
+from evidently.utils.generators import BaseGenerator
+from evidently.utils.generators import make_generator_by_columns
 
 
-class Metric(Generic[TResult]):
-    context = None
-
-    @abc.abstractmethod
-    def calculate(self, data: InputData, metrics: dict) -> TResult:
-        raise NotImplementedError()
-
-    def set_context(self, context):
-        self.context = context
-
-    def get_result(self) -> TResult:
-        if self.context is None:
-            raise ValueError("No context is set")
-        result = self.context.metric_results.get(self, None)
-        if result is None:
-            raise ValueError(f"No result found for metric {self} of type {type(self).__name__}")
-        return result
+def generate_column_metrics(
+    metric_class: Type[Metric],
+    columns: Optional[Union[str, list]] = None,
+    parameters: Optional[Dict] = None,
+    skip_id_column: bool = False,
+) -> BaseGenerator[Metric]:
+    """Function for generating metrics for columns"""
+    return make_generator_by_columns(
+        base_class=metric_class,
+        columns=columns,
+        parameters=parameters,
+        skip_id_column=skip_id_column,
+    )

@@ -1,24 +1,50 @@
+from typing import Any
+from typing import Dict
 from typing import List
+from typing import Optional
 
-from evidently.analyzers.utils import DatasetColumns
-from evidently.metrics.base_metric import InputData
+from evidently.test_preset.test_preset import AnyTest
 from evidently.test_preset.test_preset import TestPreset
-from evidently.tests import TestColumnNANShare
-from evidently.tests import TestMostCommonValueShare
+from evidently.tests import TestAllColumnsMostCommonValueShare
+from evidently.tests import TestAllColumnsShareOfMissingValues
 from evidently.tests import TestNumberOfConstantColumns
 from evidently.tests import TestNumberOfDuplicatedColumns
 from evidently.tests import TestNumberOfDuplicatedRows
-from evidently.tests import TestHighlyCorrelatedFeatures
+from evidently.utils.data_preprocessing import DataDefinition
 
 
-class DataQuality(TestPreset):
-    def generate_tests(self, data: InputData, columns: DatasetColumns):
-        all_columns: List[str] = columns.get_all_columns_list()
+class DataQualityTestPreset(TestPreset):
+    class Config:
+        type_alias = "evidently:test_preset:DataQualityTestPreset"
+
+    """
+    Data Quality tests.
+
+    Contains tests:
+    - `TestAllColumnsShareOfMissingValues`
+    - `TestAllColumnsMostCommonValueShare`
+    - `TestNumberOfConstantColumns`
+    - `TestNumberOfDuplicatedColumns`
+    - `TestNumberOfDuplicatedRows`
+    - `TestHighlyCorrelatedColumns`
+    """
+
+    columns: Optional[List[str]]
+
+    def __init__(
+        self,
+        columns: Optional[List[str]] = None,
+    ):
+        self.columns = columns
+        super().__init__()
+
+    def generate_tests(
+        self, data_definition: DataDefinition, additional_data: Optional[Dict[str, Any]]
+    ) -> List[AnyTest]:
         return [
-            *[TestColumnNANShare(column_name=name) for name in all_columns],
-            *[TestMostCommonValueShare(column_name=name) for name in all_columns],
+            TestAllColumnsShareOfMissingValues(columns=self.columns),
+            TestAllColumnsMostCommonValueShare(columns=self.columns),
             TestNumberOfConstantColumns(),
             TestNumberOfDuplicatedColumns(),
             TestNumberOfDuplicatedRows(),
-            TestHighlyCorrelatedFeatures(),
         ]

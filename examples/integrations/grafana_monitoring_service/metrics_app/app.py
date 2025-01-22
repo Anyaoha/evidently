@@ -9,12 +9,11 @@ The service gets a reference dataset from reference.csv file and process current
 
 Metrics calculation results are available with `GET /metrics` HTTP method in Prometheus compatible format.
 """
-import hashlib
-import os
-
 import dataclasses
 import datetime
+import hashlib
 import logging
+import os
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -22,23 +21,21 @@ from typing import Optional
 import flask
 import pandas as pd
 import prometheus_client
-from flask import Flask
 import yaml
+from flask import Flask
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
-from evidently.pipeline.column_mapping import ColumnMapping
-from evidently.model_monitoring import ModelMonitoring
 from evidently.model_monitoring import CatTargetDriftMonitor
 from evidently.model_monitoring import ClassificationPerformanceMonitor
 from evidently.model_monitoring import DataDriftMonitor
 from evidently.model_monitoring import DataQualityMonitor
+from evidently.model_monitoring import ModelMonitoring
 from evidently.model_monitoring import NumTargetDriftMonitor
 from evidently.model_monitoring import ProbClassificationPerformanceMonitor
 from evidently.model_monitoring import RegressionPerformanceMonitor
-
+from evidently.pipeline.column_mapping import ColumnMapping
 from evidently.runner.loader import DataLoader
 from evidently.runner.loader import DataOptions
-
 
 app = Flask(__name__)
 
@@ -93,11 +90,7 @@ class MonitoringService:
     calculation_period_sec: float = 15
     window_size: int
 
-    def __init__(
-        self,
-        datasets: Dict[str, LoadedDataset],
-        window_size: int
-    ):
+    def __init__(self, datasets: Dict[str, LoadedDataset], window_size: int):
         self.reference = {}
         self.monitoring = {}
         self.current = {}
@@ -121,7 +114,7 @@ class MonitoringService:
         window_size = self.window_size
 
         if dataset_name in self.current:
-            current_data = self.current[dataset_name].append(new_rows, ignore_index=True)
+            current_data = pd.concat([self.current[dataset_name], new_rows], ignore_index=True)
 
         else:
             current_data = new_rows
@@ -218,7 +211,7 @@ def configure_service():
                 name=dataset_name,
                 references=reference_data,
                 monitors=dataset_config["monitors"],
-                column_mapping=ColumnMapping(**dataset_config["column_mapping"])
+                column_mapping=ColumnMapping(**dataset_config["column_mapping"]),
             )
             logging.info("Reference is loaded for dataset %s: %s rows", dataset_name, len(reference_data))
 

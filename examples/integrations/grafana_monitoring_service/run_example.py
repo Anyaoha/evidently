@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
 import logging
+import os
 import shutil
 import subprocess
 
 import pandas as pd
-
 
 # suppress SettingWithCopyWarning: warning
 pd.options.mode.chained_assignment = None
@@ -15,11 +14,7 @@ pd.options.mode.chained_assignment = None
 
 def setup_logger():
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.StreamHandler()
-        ]
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", handlers=[logging.StreamHandler()]
     )
 
 
@@ -32,9 +27,9 @@ def check_docker_installation():
 
 
 def check_dataset(
-        force: bool,
-        datasets_path: str,
-        dataset_name: str,
+    force: bool,
+    datasets_path: str,
+    dataset_name: str
 ) -> None:
     logging.info("Check dataset %s", dataset_name)
     dataset_path = os.path.join(datasets_path, dataset_name)
@@ -74,8 +69,8 @@ def run_docker_compose():
 
 
 def run_script(cmd: list, wait: bool) -> None:
-    logging.info("Run %s", ' '.join(cmd))
-    script_process = subprocess.Popen(' '.join(cmd), stdout=subprocess.PIPE, shell=True)
+    logging.info("Run %s", " ".join(cmd))
+    script_process = subprocess.Popen(" ".join(cmd), stdout=subprocess.PIPE, shell=True)
 
     if wait:
         script_process.wait()
@@ -107,7 +102,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-f",
         "--force",
-        action='store_true',
+        action="store_true",
         help="Remove and download again test datasets",
     )
     parameters = parser.parse_args()

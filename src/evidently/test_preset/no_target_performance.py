@@ -1,35 +1,167 @@
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Optional
 
-from evidently.analyzers.utils import DatasetColumns
-from evidently.metrics.base_metric import InputData
+import numpy as np
+
+from evidently.calculations.stattests import PossibleStatTestType
+from evidently.metrics.data_drift.embedding_drift_methods import DriftMethod
+from evidently.pipeline.column_mapping import TaskType
+from evidently.test_preset.test_preset import AnyTest
 from evidently.test_preset.test_preset import TestPreset
-from evidently.tests import TestFeatureValueDrift
-from evidently.tests import TestShareOfDriftedFeatures
-from evidently.tests import TestColumnNANShare
-from evidently.tests import TestShareOfOutRangeValues
-from evidently.tests import TestShareOfOutListValues
-from evidently.tests import TestMeanInNSigmas
+from evidently.tests import TestAllColumnsShareOfMissingValues
+from evidently.tests import TestCatColumnsOutOfListValues
+from evidently.tests import TestColumnDrift
 from evidently.tests import TestColumnsType
+from evidently.tests import TestEmbeddingsDrift
+from evidently.tests import TestNumColumnsMeanInNSigmas
+from evidently.tests import TestNumColumnsOutOfRangeValues
+from evidently.tests import TestShareOfDriftedColumns
+from evidently.utils.data_drift_utils import add_emb_drift_to_reports
+from evidently.utils.data_drift_utils import resolve_stattest_threshold
+from evidently.utils.data_preprocessing import DataDefinition
 
 
-class NoTargetPerformance(TestPreset):
-    def __init__(self, most_important_features: Optional[List[str]] = None):
+class NoTargetPerformanceTestPreset(TestPreset):
+    class Config:
+        type_alias = "evidently:test_preset:NoTargetPerformanceTestPreset"
+
+    """
+    No Target Performance tests.
+
+    Args:
+        columns: list of columns include to tests
+
+    Contains tests:
+    - `TestColumnValueDrift`
+    - `TestShareOfDriftedColumns`
+    - `TestColumnsType`
+    - `TestAllColumnsShareOfMissingValues`
+    - `TestNumColumnsOutOfRangeValues`
+    - `TestCatColumnsOutOfListValues`
+    - `TestNumColumnsMeanInNSigmas`
+    - `TestCustomFeaturesValueDrift`
+    - 'TestEmbeddingsDrift'
+    """
+
+    columns: Optional[List[str]]
+    embeddings: Optional[List[str]]
+    embeddings_drift_method: Optional[Dict[str, DriftMethod]]
+    drift_share: Optional[float]
+    stattest: Optional[PossibleStatTestType] = None
+    cat_stattest: Optional[PossibleStatTestType] = None
+    num_stattest: Optional[PossibleStatTestType] = None
+    text_stattest: Optional[PossibleStatTestType] = None
+    per_column_stattest: Optional[Dict[str, PossibleStatTestType]] = None
+    stattest_threshold: Optional[float] = None
+    cat_stattest_threshold: Optional[float] = None
+    num_stattest_threshold: Optional[float] = None
+    text_stattest_threshold: Optional[float] = None
+    per_column_stattest_threshold: Optional[Dict[str, float]] = None
+
+    def __init__(
+        self,
+        columns: Optional[List[str]] = None,
+        embeddings: Optional[List[str]] = None,
+        embeddings_drift_method: Optional[Dict[str, DriftMethod]] = None,
+        drift_share: Optional[float] = None,
+        stattest: Optional[PossibleStatTestType] = None,
+        cat_stattest: Optional[PossibleStatTestType] = None,
+        num_stattest: Optional[PossibleStatTestType] = None,
+        text_stattest: Optional[PossibleStatTestType] = None,
+        per_column_stattest: Optional[Dict[str, PossibleStatTestType]] = None,
+        stattest_threshold: Optional[float] = None,
+        cat_stattest_threshold: Optional[float] = None,
+        num_stattest_threshold: Optional[float] = None,
+        text_stattest_threshold: Optional[float] = None,
+        per_column_stattest_threshold: Optional[Dict[str, float]] = None,
+    ):
+        self.columns = columns
+        self.embeddings = embeddings
+        self.embeddings_drift_method = embeddings_drift_method
+        self.drift_share = drift_share
+        self.stattest = stattest
+        self.cat_stattest = cat_stattest
+        self.num_stattest = num_stattest
+        self.text_stattest = text_stattest
+        self.per_column_stattest = per_column_stattest
+        self.stattest_threshold = stattest_threshold
+        self.cat_stattest_threshold = cat_stattest_threshold
+        self.num_stattest_threshold = num_stattest_threshold
+        self.text_stattest_threshold = text_stattest_threshold
+        self.per_column_stattest_threshold = per_column_stattest_threshold
         super().__init__()
-        self.most_important_features = [] if most_important_features is None else most_important_features
 
-    def generate_tests(self, data: InputData, columns: DatasetColumns):
-        all_columns: List[str] = columns.get_all_columns_list()
+    def generate_tests(
+        self, data_definition: DataDefinition, additional_data: Optional[Dict[str, Any]]
+    ) -> List[AnyTest]:
+        embeddings_data = data_definition.embeddings
+        columns = self.columns
+        if embeddings_data is not None:
+            embs = list(set(v for values in embeddings_data.values() for v in values))
+            if columns is None:
+                columns = list(
+                    np.setdiff1d(
+                        [column.column_name for column in data_definition.get_columns(features_only=True)],
+                        embs,
+                    )
+                )
+            else:
+                columns = list(np.setdiff1d(columns, embs))
+
         preset_tests: List = []
 
-        if columns.utility_columns.prediction is not None and isinstance(columns.utility_columns.prediction, str):
-            preset_tests.append(TestFeatureValueDrift(column_name=columns.utility_columns.prediction))
-
-        preset_tests.append(TestShareOfDriftedFeatures(lt=data.current_data.shape[1] // 3))
+        prediction_columns = data_definition.get_prediction_columns()
+        if prediction_columns is not None and prediction_columns.predicted_values is not None:
+            stattest, threshold = resolve_stattest_threshold(
+                prediction_columns.predicted_values.column_name,
+                "cat" if data_definition.task == TaskType.CLASSIFICATION_TASK else "num",
+                self.stattest,
+                self.cat_stattest,
+                self.num_stattest,
+                self.text_stattest,
+                self.per_column_stattest,
+                self.stattest_threshold,
+                self.cat_stattest_threshold,
+                self.num_stattest_threshold,
+                self.text_stattest_threshold,
+                self.per_column_stattest_threshold,
+            )
+            preset_tests.append(
+                TestColumnDrift(
+                    column_name=prediction_columns.predicted_values.column_name,
+                    stattest=stattest,
+                    stattest_threshold=threshold,
+                )
+            )
+        preset_tests.append(
+            TestShareOfDriftedColumns(
+                lt=0.3 if self.drift_share is None else self.drift_share,
+                stattest=self.stattest,
+                cat_stattest=self.cat_stattest,
+                num_stattest=self.num_stattest,
+                text_stattest=self.text_stattest,
+                per_column_stattest=self.per_column_stattest,
+                stattest_threshold=self.stattest_threshold,
+                cat_stattest_threshold=self.cat_stattest_threshold,
+                num_stattest_threshold=self.num_stattest_threshold,
+                text_stattest_threshold=self.text_stattest_threshold,
+                per_column_stattest_threshold=self.per_column_stattest_threshold,
+            )
+        )
         preset_tests.append(TestColumnsType())
-        preset_tests.extend([TestColumnNANShare(column_name=name) for name in all_columns])
-        preset_tests.extend([TestShareOfOutRangeValues(column_name=name) for name in columns.num_feature_names])
-        preset_tests.extend([TestShareOfOutListValues(column_name=name) for name in columns.cat_feature_names])
-        preset_tests.extend([TestMeanInNSigmas(column_name=name, n_sigmas=2) for name in columns.num_feature_names])
-        preset_tests.extend([TestFeatureValueDrift(column_name=name) for name in self.most_important_features])
+        preset_tests.append(TestAllColumnsShareOfMissingValues(columns=columns))
+        preset_tests.append(TestNumColumnsOutOfRangeValues(columns=columns))
+        preset_tests.append(TestCatColumnsOutOfListValues(columns=columns))
+        preset_tests.append(TestNumColumnsMeanInNSigmas(columns=columns))
+
+        if embeddings_data is None:
+            return preset_tests
+        preset_tests += add_emb_drift_to_reports(
+            embeddings_data,
+            self.embeddings,
+            self.embeddings_drift_method,
+            TestEmbeddingsDrift,
+        )
         return preset_tests

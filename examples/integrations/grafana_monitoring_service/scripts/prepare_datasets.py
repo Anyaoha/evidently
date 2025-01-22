@@ -11,21 +11,16 @@ from typing import Tuple
 import pandas as pd
 import requests
 
-
 # suppress SettingWithCopyWarning: warning
 pd.options.mode.chained_assignment = None
 
 
-BIKE_DATA_SOURCE_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/00275/Bike-Sharing-Dataset.zip"
+BIKE_DATA_SOURCE_URL = "https://archive.ics.uci.edu/static/public/275/bike+sharing+dataset.zip"
 
 
 def setup_logger() -> None:
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.StreamHandler()
-        ]
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", handlers=[logging.StreamHandler()]
     )
 
 
@@ -57,11 +52,13 @@ def get_data_bike(use_model: bool) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     if use_model:
         from sklearn.ensemble import RandomForestRegressor
+
         # get predictions with random forest
         model = RandomForestRegressor(random_state=0)
 
     else:
         from sklearn.ensemble import GradientBoostingRegressor
+
         model = GradientBoostingRegressor(random_state=0)
 
     model.fit(reference_bike_data[features], reference_bike_data[target])
@@ -72,8 +69,8 @@ def get_data_bike(use_model: bool) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def get_data_kdd_classification() -> Tuple[pd.DataFrame, pd.DataFrame]:
-    from sklearn import neighbors
     from sklearn import model_selection
+    from sklearn import neighbors
 
     # local import for make other cases faster
     from sklearn.datasets import fetch_kddcup99

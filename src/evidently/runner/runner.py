@@ -1,11 +1,16 @@
 import logging
-from typing import Optional, List, Dict, Type
-
 from dataclasses import dataclass
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Type
 
-from evidently.options import DataDriftOptions, QualityMetricsOptions
+from evidently.options.data_drift import DataDriftOptions
+from evidently.options.quality_metrics import QualityMetricsOptions
 from evidently.pipeline.column_mapping import ColumnMapping
-from evidently.runner.loader import DataLoader, SamplingOptions, DataOptions
+from evidently.runner.loader import DataLoader
+from evidently.runner.loader import DataOptions
+from evidently.runner.loader import SamplingOptions
 
 
 @dataclass
@@ -22,8 +27,8 @@ class RunnerOptions:
 
 
 options_mapping: Dict[str, Type] = {
-    'data_drift': DataDriftOptions,
-    'quality_metrics': QualityMetricsOptions,
+    "data_drift": DataDriftOptions,
+    "quality_metrics": QualityMetricsOptions,
 }
 
 
@@ -46,14 +51,14 @@ class Runner:
     def _parse_data(self):
         loader = DataLoader()
 
-        reference_data = loader.load(self.options.reference_data_path,
-                                     self.options.reference_data_options,
-                                     self.options.reference_data_sampling)
+        reference_data = loader.load(
+            self.options.reference_data_path, self.options.reference_data_options, self.options.reference_data_sampling
+        )
         logging.info(f"reference dataset loaded: {len(reference_data)} rows")
         if self.options.current_data_path:
-            current_data = loader.load(self.options.current_data_path,
-                                       self.options.current_data_options,
-                                       self.options.current_data_sampling)
+            current_data = loader.load(
+                self.options.current_data_path, self.options.current_data_options, self.options.current_data_sampling
+            )
             logging.info(f"current dataset loaded: {len(current_data)} rows")
         else:
             current_data = None

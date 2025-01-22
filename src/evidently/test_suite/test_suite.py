@@ -1,77 +1,106 @@
-import copy
 import dataclasses
-import json
-import uuid
-from datetime import datetime
+import warnings
 from collections import Counter
+from datetime import datetime
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Type
 from typing import Union
-from typing import Iterator
-from typing import Tuple
 
 import pandas as pd
 
-import evidently
-from evidently import ColumnMapping
-from evidently.analyzers.utils import process_columns
-from evidently.analyzers.utils import DatasetColumns
-from evidently.dashboard.dashboard import TemplateParams
-from evidently.dashboard.dashboard import SaveMode
-from evidently.dashboard.dashboard import SaveModeMap
-from evidently.dashboard.dashboard import save_lib_files
-from evidently.dashboard.dashboard import save_data_file
+from evidently.base_metric import GenericInputData
+from evidently.calculation_engine.engine import Engine
+from evidently.calculation_engine.python_engine import PythonEngine
+from evidently.core import IncludeOptions
+from evidently.core import new_id
 from evidently.model.dashboard import DashboardInfo
 from evidently.model.widget import BaseWidgetInfo
-from evidently.utils import NumpyEncoder
-from evidently.metrics.base_metric import InputData
-from evidently.metrics.base_metric import Metric
-from evidently.renderers.notebook_utils import determine_template
+from evidently.model.widget import set_source_fingerprint
+from evidently.options.base import AnyOptions
+from evidently.pipeline.column_mapping import ColumnMapping
+from evidently.renderers.base_renderer import TestHtmlInfo
+from evidently.renderers.base_renderer import TestRenderer
+from evidently.renderers.base_renderer import WidgetIdGenerator
+from evidently.renderers.base_renderer import replace_test_widget_ids
+from evidently.suite.base_suite import MetadataValueType
+from evidently.suite.base_suite import ReportBase
+from evidently.suite.base_suite import Snapshot
 from evidently.suite.base_suite import Suite
 from evidently.suite.base_suite import find_test_renderer
 from evidently.test_preset.test_preset import TestPreset
+from evidently.tests.base_test import DEFAULT_GROUP
 from evidently.tests.base_test import Test
-from evidently.tests.base_test import TestResult
+from evidently.tests.base_test import TestStatus
+from evidently.ui.type_aliases import SnapshotID
+from evidently.utils.data_preprocessing import DataDefinition
+from evidently.utils.generators import BaseGenerator
+
+TEST_GENERATORS = "test_generators"
+TEST_PRESETS = "test_presets"
 
 
-def _discover_dependencies(test: Test) -> Iterator[Tuple[str, Union[Metric, Test]]]:
-    for field_name, field in test.__dict__.items():
-        if issubclass(type(field), (Metric, Test)):
-            yield field_name, field
-
-
-class TestSuite:
-    _inner_suite: Suite
-    _columns_info: DatasetColumns
+class TestSuite(ReportBase):
+    _data_definition: DataDefinition
     _test_presets: List[TestPreset]
+    _test_generators: List[BaseGenerator]
+    _tests: List[Test]
+    _timestamp: Optional[datetime]
 
-    def __init__(self, tests: Optional[List[Union[Test, TestPreset]]]):
-        self._inner_suite = Suite()
+    def __init__(
+        self,
+        tests: Optional[List[Union[Test, TestPreset, BaseGenerator]]],
+        options: AnyOptions = None,
+        timestamp: Optional[datetime] = None,
+        id: Optional[SnapshotID] = None,
+        metadata: Dict[str, MetadataValueType] = None,
+        tags: List[str] = None,
+        name: str = None,
+    ):
+        super().__init__(options, name)
+        if id is not None:
+            warnings.warn("id argument is deprecated and has no effect", DeprecationWarning)
+        self._timestamp = None
+        if timestamp is not None:
+            warnings.warn("timestamp argument is deprecated, use timestamp in run() method", DeprecationWarning)
+            self._timestamp = timestamp
+        self._inner_suite = Suite(self.options)
         self._test_presets = []
-
+        self._test_generators = []
+        self._tests = []
+        self.metadata = metadata or {}
+        self.tags = tags or []
         for original_test in tests or []:
             if isinstance(original_test, TestPreset):
                 self._test_presets.append(original_test)
+                if TEST_PRESETS not in self.metadata:
+                    self.metadata[TEST_PRESETS] = []
+                self.metadata[TEST_PRESETS].append(original_test.__class__.__name__)  # type: ignore[union-attr]
+            elif isinstance(original_test, BaseGenerator):
+                self._test_generators.append(original_test)
 
+                if TEST_GENERATORS not in self.metadata:
+                    self.metadata[TEST_GENERATORS] = []
+                self.metadata[TEST_GENERATORS].append(original_test.__class__.__name__)  # type: ignore[union-attr]
             else:
-                self._add_test(original_test)
+                self._tests.append(original_test)
+
+    def _add_tests(self):
+        for original_test in self._tests or []:
+            self._add_test(original_test)
 
     def _add_test(self, test: Test):
-        new_test = copy.copy(test)
-
-        for field_name, dependency in _discover_dependencies(new_test):
-            if isinstance(dependency, Metric):
-                self._inner_suite.add_metrics(dependency)
-
-            if isinstance(dependency, Test):
-                dependency_copy = copy.copy(dependency)
-                new_test.__setattr__(field_name, dependency_copy)
-                self._inner_suite.add_tests(dependency_copy)
-
-        self._inner_suite.add_tests(new_test)
+        new_test = test.copy()  # copy.copy(test)
+        self._inner_suite.add_test(new_test)
 
     def __bool__(self):
         return all(test_result.is_passed() for _, test_result in self._inner_suite.context.test_results.items())
+
+    def _add_tests_from_generator(self, test_generator: BaseGenerator):
+        for test_item in test_generator.generate(self._data_definition):
+            self._add_test(test_item)
 
     def run(
         self,
@@ -79,117 +108,126 @@ class TestSuite:
         reference_data: Optional[pd.DataFrame],
         current_data: pd.DataFrame,
         column_mapping: Optional[ColumnMapping] = None,
+        engine: Optional[Type[Engine]] = None,
+        additional_data: Dict[str, Any] = None,
+        timestamp: Optional[datetime] = None,
     ) -> None:
         if column_mapping is None:
             column_mapping = ColumnMapping()
-
-        self._columns_info = process_columns(current_data, column_mapping)
-
+        self.id = new_id()
+        if self._timestamp is not None:
+            self.timestamp = self._timestamp
+        else:
+            self.timestamp = timestamp or datetime.now()
+        self._inner_suite.reset()
+        self._inner_suite.set_engine(PythonEngine() if engine is None else engine())
+        self._add_tests()
+        if self._inner_suite.context.engine is None:
+            raise ValueError("Engine is not set")
+        self._data_definition = self._inner_suite.context.get_data_definition(
+            current_data,
+            reference_data,
+            column_mapping,
+        )
         for preset in self._test_presets:
-            tests = preset.generate_tests(InputData(reference_data, current_data, column_mapping), self._columns_info)
+            tests = preset.generate_tests(self._data_definition, additional_data=additional_data)
 
             for test in tests:
-                self._add_test(test)
+                if isinstance(test, BaseGenerator):
+                    self._add_tests_from_generator(test)
+                else:
+                    self._add_test(test)
 
+        for test_generator in self._test_generators:
+            self._add_tests_from_generator(test_generator)
         self._inner_suite.verify()
-        self._inner_suite.run_calculate(InputData(reference_data, current_data, column_mapping))
+        data = GenericInputData(
+            reference_data,
+            current_data,
+            column_mapping,
+            self._data_definition,
+            additional_data=additional_data or {},
+        )
+
+        self._inner_suite.run_calculate(data)
         self._inner_suite.run_checks()
 
-    def _repr_html_(self):
-        dashboard_id, dashboard_info, graphs = self._build_dashboard_info()
-        template_params = TemplateParams(
-            dashboard_id=dashboard_id, dashboard_info=dashboard_info, additional_graphs=graphs
-        )
-        return self._render(determine_template("inline"), template_params)
+    def json(  # type: ignore[override]
+        self,
+        include_metrics: bool = False,
+        include_render: bool = False,
+        include: Dict[str, IncludeOptions] = None,
+        exclude: Dict[str, IncludeOptions] = None,
+        **kwargs,
+    ) -> str:
+        return super().json(include_render, include, exclude, include_metrics=include_metrics)
 
-    def show(self, mode="auto"):
-        dashboard_id, dashboard_info, graphs = self._build_dashboard_info()
-        template_params = TemplateParams(
-            dashboard_id=dashboard_id, dashboard_info=dashboard_info, additional_graphs=graphs
-        )
-        # pylint: disable=import-outside-toplevel
-        try:
-            from IPython.display import HTML
-
-            return HTML(self._render(determine_template(mode), template_params))
-        except ImportError as err:
-            raise Exception("Cannot import HTML from IPython.display, no way to show html") from err
-
-    def save_html(self, filename: str, mode: Union[str, SaveMode] = SaveMode.SINGLE_FILE):
-        dashboard_id, dashboard_info, graphs = self._build_dashboard_info()
-        if isinstance(mode, str):
-            _mode = SaveModeMap.get(mode)
-            if _mode is None:
-                raise ValueError(f"Unexpected save mode {mode}. Expected [{','.join(SaveModeMap.keys())}]")
-            mode = _mode
-        if mode == SaveMode.SINGLE_FILE:
-            template_params = TemplateParams(
-                dashboard_id=dashboard_id,
-                dashboard_info=dashboard_info,
-                additional_graphs=graphs,
-            )
-            with open(filename, "w", encoding="utf-8") as out_file:
-                out_file.write(self._render(determine_template("inline"), template_params))
-        else:
-            font_file, lib_file = save_lib_files(filename, mode)
-            data_file = save_data_file(filename, mode, dashboard_id, dashboard_info, graphs)
-            template_params = TemplateParams(
-                dashboard_id=dashboard_id,
-                dashboard_info=dashboard_info,
-                additional_graphs=graphs,
-                embed_lib=False,
-                embed_data=False,
-                embed_font=False,
-                font_file=font_file,
-                include_js_files=[lib_file, data_file],
-            )
-            with open(filename, "w", encoding="utf-8") as out_file:
-                out_file.write(self._render(determine_template("inline"), template_params))
-
-    def as_dict(self) -> dict:
+    def as_dict(  # type: ignore[override]
+        self,
+        include_metrics: bool = False,
+        include_render: bool = False,
+        include: Dict[str, IncludeOptions] = None,
+        exclude: Dict[str, IncludeOptions] = None,
+        **kwargs,
+    ) -> dict:
         test_results = []
+        include = include or {}
+        exclude = exclude or {}
         counter = Counter(test_result.status for test_result in self._inner_suite.context.test_results.values())
 
         for test in self._inner_suite.context.test_results:
             renderer = find_test_renderer(type(test), self._inner_suite.context.renderers)
-            test_results.append(renderer.render_json(test))
+            test_id = test.get_id()
+            try:
+                test_data = renderer.render_json(
+                    test, include_render=include_render, include=include.get(test_id), exclude=exclude.get(test_id)
+                )
+                test_results.append(test_data)
+            except BaseException as e:
+                test_data = TestRenderer.render_json(renderer, test)
+                test_data["status"] = TestStatus.ERROR
+                test_data["description"] = f"Test failed with exception: {e}"
+                test_results.append(test_data)
 
         total_tests = len(self._inner_suite.context.test_results)
 
-        return {
-            "version": evidently.__version__,
-            "datetime": datetime.now().isoformat(),
+        result = {
             "tests": test_results,
             "summary": {
                 "all_passed": bool(self),
                 "total_tests": total_tests,
-                "success_tests": counter["SUCCESS"] + counter["WARNING"],
-                "failed_tests": counter["FAIL"],
-                "by_status": counter,
+                "success_tests": counter[TestStatus.SUCCESS] + counter[TestStatus.WARNING],
+                "failed_tests": counter[TestStatus.FAIL],
+                "by_status": {k.value: v for k, v in counter.items()},
             },
-            "columns_info": dataclasses.asdict(self._columns_info),
         }
+        if include_metrics:
+            from evidently.report import Report
 
-    def json(self) -> str:
-        return json.dumps(self.as_dict(), cls=NumpyEncoder)
-
-    def save_json(self, filename):
-        with open(filename, "w", encoding="utf-8") as out_file:
-            json.dump(self.as_dict(), out_file, cls=NumpyEncoder)
-
-    def _render(self, temple_func, template_params: TemplateParams):
-        return temple_func(params=template_params)
+            report = Report([])
+            report._first_level_metrics = self._inner_suite.context.metrics
+            report._inner_suite.context = self._inner_suite.context
+            result["metric_results"] = report.as_dict(include_render=include_render, include=include, exclude=exclude)[
+                "metrics"
+            ]
+        return result
 
     def _build_dashboard_info(self):
-        test_results = []
+        test_results: List[TestHtmlInfo] = []
         total_tests = len(self._inner_suite.context.test_results)
         by_status = {}
+        color_options = self.options.color_options
 
+        generator = WidgetIdGenerator("")
         for test, test_result in self._inner_suite.context.test_results.items():
-            # renderer = find_test_renderer(type(test.obj), self._inner_suite.context.renderers)
+            generator.base_id = test.get_id()
             renderer = find_test_renderer(type(test), self._inner_suite.context.renderers)
+            renderer.color_options = color_options
             by_status[test_result.status] = by_status.get(test_result.status, 0) + 1
-            test_results.append(renderer.render_html(test))
+            html = renderer.render_html(test)
+            set_source_fingerprint((di.info for di in html.details), test)
+            replace_test_widget_ids(html, generator)
+            test_results.append(html)
 
         summary_widget = BaseWidgetInfo(
             title="",
@@ -198,8 +236,8 @@ class TestSuite:
             params={
                 "counters": [{"value": f"{total_tests}", "label": "Tests"}]
                 + [
-                    {"value": f"{by_status.get(status, 0)}", "label": f"{status.title()}"}
-                    for status in [TestResult.SUCCESS, TestResult.WARNING, TestResult.FAIL, TestResult.ERROR]
+                    {"value": f"{by_status.get(status, 0)}", "label": f"{status.value.title()}"}
+                    for status in [TestStatus.SUCCESS, TestStatus.WARNING, TestStatus.FAIL, TestStatus.ERROR]
                 ]
             },
         )
@@ -212,21 +250,41 @@ class TestSuite:
                     dict(
                         title=test_info.name,
                         description=test_info.description,
+                        test_fingerprint=test_info.test_fingerprint,
                         state=test_info.status.lower(),
                         details=dict(
-                            parts=[
-                                dict(id=f"{test_info.name}_{item.id}", title=item.title, type="widget")
-                                for item in test_info.details
-                            ]
+                            parts=[dict(id=item.id, title=item.title, type="widget") for item in test_info.details]
                         ),
+                        groups=test_info.groups,
                     )
-                    for test_info in test_results
-                ]
+                    for idx, test_info in enumerate(test_results)
+                ],
+                "testGroupTypes": DEFAULT_GROUP,
             },
             additionalGraphs=[],
         )
         return (
-            "evidently_dashboard_" + str(uuid.uuid4()).replace("-", ""),
+            "evidently_dashboard_" + str(new_id()).replace("-", ""),
             DashboardInfo("Test Suite", widgets=[summary_widget, test_suite_widget]),
-            {f"{info.name}_{item.id}": dataclasses.asdict(item.info) for info in test_results for item in info.details},
+            {item.id: dataclasses.asdict(item.info) for idx, info in enumerate(test_results) for item in info.details},
         )
+
+    def _get_snapshot(self) -> Snapshot:
+        snapshot = super()._get_snapshot()
+        snapshot.test_ids = list(range(len(snapshot.suite.tests)))
+        return snapshot
+
+    @classmethod
+    def _parse_snapshot(cls, snapshot: Snapshot) -> "TestSuite":
+        ctx = snapshot.suite.to_context()
+        suite = TestSuite(
+            tests=None,
+            metadata=snapshot.metadata,
+            tags=snapshot.tags,
+            options=snapshot.options,
+            name=snapshot.name,
+        )
+        suite.id = snapshot.id
+        suite.timestamp = snapshot.timestamp
+        suite._inner_suite.context = ctx
+        return suite
